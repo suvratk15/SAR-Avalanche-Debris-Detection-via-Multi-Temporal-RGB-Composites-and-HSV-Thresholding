@@ -1,0 +1,2 @@
+# SAR-Avalanche-Debris-Detection-via-Multi-Temporal-RGB-Composites-and-HSV-Thresholding
+This script processes a time-series of Sentinel-1 SAR images to detect avalanche debris. 1. Normalizes SAR backscatter (dB scale). 2. Creates an RGB composite where Green represents the current image (highlighting backscatter increase). 3. Applies HSV (Hue-Saturation-Value) thresholding to isolate 'Bright Green' pixels
