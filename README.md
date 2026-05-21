@@ -9,7 +9,7 @@
 
 This repository contains an automated Python pipeline for detecting and mapping avalanche debris using Sentinel-1 Synthetic Aperture Radar (SAR) time-series data. The method leverages the physical properties of SAR backscatter changes following avalanche events, visualized through RGB composites and isolated via Hue-Saturation-Value (HSV) thresholding.
 
-## 🏔️ Scientific Background
+## Scientific Background
 
 Monitoring snow avalanches in mountainous terrain is often hindered by cloud cover and darkness. Sentinel-1 SAR imagery provides an all-weather, day-and-night solution. 
 
@@ -17,7 +17,7 @@ This tool is designed for scenarios where avalanche debris results in a **backsc
 *   **Increased Surface Roughness:** The chaotic nature of debris piles increases surface scattering.
 *   **Volume Scattering:** Changes in the internal structure of the snowpack within the debris flow.
 
-## 🛠️ Methodology
+## Methodology
 
 The algorithm processes SAR time-series through four distinct stages:
 
@@ -36,7 +36,7 @@ The RGB composite is transformed into the **Hue-Saturation-Value (HSV)** color d
 ### 4. Spatial Noise Filtering
 To mitigate the effects of SAR speckle noise, the script applies a connected-component filter using **8-connectivity**. This ensures that only physically plausible debris clusters (user-defined minimum area) are retained in the final detection mask.
 
-## 📦 Requirements
+## Requirements
 
 *   **Python 3.8+**
 *   **NumPy:** For vectorized array processing.
@@ -49,7 +49,7 @@ pip install numpy opencv-python rasterio
 ```
 
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Data Preparation
 1. Ensure your Sentinel-1 images are pre-processed (e.g., via SNAP or S1Tiling) and orthorectified.
@@ -69,7 +69,7 @@ python sar_avalanche_detector.py
 ```
 
 
-## 📂 Output Data Structure
+## Output Data Structure
 
 ```plain text
 /results/
@@ -79,7 +79,7 @@ python sar_avalanche_detector.py
 ```
 
 
-## 📝 Citation & License
+## Citation & License
 
 **License:** Distributed under the MIT License. See `LICENSE` for more information.
 
