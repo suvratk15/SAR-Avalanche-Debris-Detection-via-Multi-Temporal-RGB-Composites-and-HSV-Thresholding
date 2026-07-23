@@ -9,7 +9,14 @@ Requirements:
 Description:
 This script processes a time-series of Sentinel-1 SAR images to detect avalanche debris.
 1. Normalizes SAR backscatter (dB scale).
-2. Creates an RGB composite where Green represents the current image (highlighting backscatter increase).
+2. Creates a multi-temporal RGB composite:
+
+    Red   = previous SAR acquisition
+    Green = current SAR acquisition
+    Blue  = previous SAR acquisition
+
+Pixels exhibiting a relative increase in backscatter appear progressively
+greener and are subsequently isolated using HSV thresholding.
 3. Applies HSV (Hue-Saturation-Value) thresholding to isolate 'Bright Green' pixels.
 4. Filters results by connected-component size (cluster size) to reduce noise.
 """
@@ -19,7 +26,7 @@ import cv2
 import numpy as np
 import rasterio
 from rasterio.errors import RasterioIOError
-from typing import List, Tuple, Optional
+from typing import Tuple, Optional
 
 # =========================
 # Configuration & Constants
@@ -31,16 +38,71 @@ VALID_RASTER_EXTENSIONS = (".tif", ".tiff")
 CLAMP_MIN = -30.0
 CLAMP_MAX = 0.0
 
+# ============================================================
+# INPUT DATA TYPE
+# ============================================================
+# Set to:
+#   False -> input SAR images are in linear backscatter (σ⁰, γ⁰, β⁰)
+#   True  -> input SAR images are already in decibel (dB) units
+#
+# Linear SAR images are converted to dB using:
+#       dB = 10 * log10(linear)
+# ============================================================
+
+INPUT_IS_DB = False
+
 # =========================
 # Core Functions
 # =========================
 
 def preprocess_raster(band: np.ndarray) -> np.ndarray:
-    """Converts linear SAR to dB, clamps, and normalizes to [0, 1]."""
-    band = np.where(band > 0, band, 1e-10)
-    band_db = 10.0 * np.log10(band)
-    band_db = np.clip(band_db, CLAMP_MIN, CLAMP_MAX)
-    band_norm = (band_db - CLAMP_MIN) / (CLAMP_MAX - CLAMP_MIN)
+    """
+    Converts the input SAR image to dB (if required), clamps the values,
+    and normalizes them to the range [0, 1].
+
+    Parameters
+    ----------
+    band : np.ndarray
+        Input SAR image. Can be either linear backscatter or dB,
+        depending on the INPUT_IS_DB setting.
+
+    Returns
+    -------
+    np.ndarray
+        Normalized SAR image in the range [0, 1].
+    """
+
+    # --------------------------------------------------------
+    # Convert to dB if the input is linear SAR
+    # --------------------------------------------------------
+
+    if INPUT_IS_DB:
+
+        band_db = band.astype(np.float32)
+
+    else:
+
+        # Prevent log10(0)
+        band = np.where(band > 0, band, 1e-10)
+
+        band_db = 10.0 * np.log10(band)
+
+    # --------------------------------------------------------
+    # Clamp and normalize
+    # --------------------------------------------------------
+
+    band_db = np.clip(
+        band_db,
+        CLAMP_MIN,
+        CLAMP_MAX,
+    )
+
+    band_norm = (
+        band_db - CLAMP_MIN
+    ) / (
+        CLAMP_MAX - CLAMP_MIN
+    )
+
     return band_norm.astype(np.float32)
 
 def read_band(path: str) -> Tuple[np.ndarray, dict]:
@@ -71,75 +133,300 @@ def write_rgb(path: str, rgb: np.ndarray, profile: dict) -> None:
         for i in range(3):
             dst.write(rgb[:, :, i].astype("float32"), i + 1)
 
-def create_rgb_composite(current_norm: np.ndarray, prev_norm: Optional[np.ndarray]) -> np.ndarray:
-    """Creates RGB: Green=Current, Red/Blue=Previous."""
-    g = current_norm
-    r = prev_norm if prev_norm is not None else np.zeros_like(current_norm)
-    b = r.copy()
-    return np.dstack([r, g, b]).astype(np.float32)
+def create_rgb_composite(
+    current_norm: np.ndarray,
+    previous_norm: Optional[np.ndarray],
+) -> np.ndarray:
+    """
+    Creates a multi-temporal RGB composite.
 
-def hsv_threshold(hsv_image: np.ndarray, thresholds: List[Tuple]) -> List[np.ndarray]:
-    """Isolates colors based on HSV ranges."""
-    masks = []
-    for (h_range, s_range, v_range) in thresholds:
-        lower = np.array([h_range[0], s_range[0], v_range[0]])
-        upper = np.array([h_range[1], s_range[1], v_range[1]])
-        masks.append(cv2.inRange(hsv_image, lower, upper))
-    return masks
+    Red   : Previous SAR acquisition
+    Green : Current SAR acquisition
+    Blue  : Previous SAR acquisition
 
-def filter_by_cluster_size(binary_mask: np.ndarray, min_size: int) -> np.ndarray:
-    """Removes small noise clusters."""
-    mask = (binary_mask > 0).astype(np.uint8)
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    filtered = np.zeros_like(mask)
-    for i in range(1, num_labels):
-        if stats[i, cv2.CC_STAT_AREA] >= min_size:
-            filtered[labels == i] = 1
-    return filtered
+    Parameters
+    ----------
+    current_norm : np.ndarray
+        Normalized current SAR acquisition.
 
-def process_time_series(input_dir: str, norm_dir: str, output_dir: str, thresholds: List, min_cluster: int):
-    files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(VALID_RASTER_EXTENSIONS)])
-    if not files: return
+    previous_norm : np.ndarray
+        Normalized previous SAR acquisition.
+
+    Returns
+    -------
+    np.ndarray
+        Three-band RGB composite in the range [0, 1].
+    """
+
+    if previous_norm is None:
+        previous_norm = np.zeros_like(current_norm)
+
+    red = previous_norm
+    green = current_norm
+    blue = previous_norm
+
+    return np.dstack((red, green, blue)).astype(np.float32)
     
+def hsv_threshold(
+    hsv_image: np.ndarray,
+    thresholds: dict,
+) -> np.ndarray:
+    """
+    Detects pixels that fall within the specified HSV threshold ranges.
+
+    Parameters
+    ----------
+    hsv_image : np.ndarray
+        HSV image generated from the RGB composite.
+
+    thresholds : dict
+        Dictionary containing the HSV threshold limits.
+
+    Returns
+    -------
+    np.ndarray
+        Binary detection mask.
+    """
+
+    lower = np.array(
+        [
+            thresholds["hue"][0],
+            thresholds["saturation"][0],
+            thresholds["value"][0],
+        ],
+        dtype=np.uint8,
+    )
+
+    upper = np.array(
+        [
+            thresholds["hue"][1],
+            thresholds["saturation"][1],
+            thresholds["value"][1],
+        ],
+        dtype=np.uint8,
+    )
+
+    return cv2.inRange(
+        hsv_image,
+        lower,
+        upper,
+    )
+
+def filter_by_cluster_size(
+    binary_mask: np.ndarray,
+    min_size: int,
+) -> np.ndarray:
+    """
+    Removes connected components smaller than the specified area.
+
+    Parameters
+    ----------
+    binary_mask : np.ndarray
+        Binary detection mask.
+
+    min_size : int
+        Minimum connected-component size (pixels).
+
+    Returns
+    -------
+    np.ndarray
+        Filtered binary mask.
+    """
+
+    mask = (binary_mask > 0).astype(np.uint8)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask,
+        connectivity=8,
+    )
+
+    filtered = np.zeros_like(mask)
+
+    for label in range(1, num_labels):
+
+        if stats[label, cv2.CC_STAT_AREA] >= min_size:
+
+            filtered[labels == label] = 1
+
+    return filtered
+    
+def process_time_series(
+    input_dir: str,
+    norm_dir: str,
+    output_dir: str,
+    thresholds: dict,
+    min_cluster: int,
+):
+    """
+    Processes a chronological Sentinel-1 SAR time series and generates:
+
+    - Normalized SAR images
+    - RGB composites
+    - Binary avalanche detection masks
+    """
+
+    files = sorted(
+        [
+            f for f in os.listdir(input_dir)
+            if f.lower().endswith(VALID_RASTER_EXTENSIONS)
+        ]
+    )
+
+    if not files:
+        return
+
     mask_dir = os.path.join(output_dir, "Detection_Masks")
     comp_dir = os.path.join(output_dir, "RGB_Composites")
-    for d in [norm_dir, comp_dir, mask_dir]: os.makedirs(d, exist_ok=True)
 
-    prev_norm = None
+    for directory in (norm_dir, comp_dir, mask_dir):
+        os.makedirs(directory, exist_ok=True)
+
+    previous_norm = None
+
     for fname in files:
+
         path = os.path.join(input_dir, fname)
+
         try:
+
+            # --------------------------------------------------------
+            # Read SAR image
+            # --------------------------------------------------------
+
             raw, profile = read_band(path)
+
             current_norm = preprocess_raster(raw)
-            
-            # Save Normalization
-            write_single_band(os.path.join(norm_dir, f"{os.path.splitext(fname)[0]}_norm.tif"), current_norm, profile)
 
-            # RGB Composite
-            rgb = create_rgb_composite(current_norm, prev_norm)
-            write_rgb(os.path.join(comp_dir, f"{os.path.splitext(fname)[0]}_RGB.tif"), rgb, profile)
+            # --------------------------------------------------------
+            # Save normalized SAR image
+            # --------------------------------------------------------
 
-            # Thresholding
-            rgb_u8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-            hsv = cv2.cvtColor(rgb_u8, cv2.COLOR_RGB2HSV)
-            masks = hsv_threshold(hsv, thresholds)
+            write_single_band(
+                os.path.join(
+                    norm_dir,
+                    f"{os.path.splitext(fname)[0]}_norm.tif",
+                ),
+                current_norm,
+                profile,
+            )
 
-            # Filter & Save
-            for idx, m in enumerate(masks):
-                filtered = filter_by_cluster_size(m, min_cluster)
-                write_single_band(os.path.join(mask_dir, f"{os.path.splitext(fname)[0]}_mask.tif"), filtered, profile, dtype="uint8")
+            # --------------------------------------------------------
+            # Skip first acquisition (no previous image available)
+            # --------------------------------------------------------
 
-            prev_norm = current_norm
+            if previous_norm is None:
+
+                previous_norm = current_norm
+
+                print(
+                    f"Skipping first acquisition: {fname}"
+                )
+
+                continue
+
+            # --------------------------------------------------------
+            # Create RGB composite
+            # --------------------------------------------------------
+
+            rgb = create_rgb_composite(
+                current_norm,
+                previous_norm,
+            )
+
+            write_rgb(
+                os.path.join(
+                    comp_dir,
+                    f"{os.path.splitext(fname)[0]}_RGB.tif",
+                ),
+                rgb,
+                profile,
+            )
+
+            # --------------------------------------------------------
+            # RGB → HSV conversion
+            # --------------------------------------------------------
+
+            rgb_u8 = np.clip(
+                rgb * 255.0,
+                0,
+                255,
+            ).astype(np.uint8)
+
+            hsv = cv2.cvtColor(
+                rgb_u8,
+                cv2.COLOR_RGB2HSV,
+            )
+
+            # --------------------------------------------------------
+            # HSV thresholding
+            # --------------------------------------------------------
+
+            mask = hsv_threshold(
+                hsv,
+                thresholds,
+            )
+
+            # --------------------------------------------------------
+            # Connected-component filtering
+            # --------------------------------------------------------
+
+            filtered = filter_by_cluster_size(
+                mask,
+                min_cluster,
+            )
+
+            # --------------------------------------------------------
+            # Save detection mask
+            # --------------------------------------------------------
+
+            write_single_band(
+                os.path.join(
+                    mask_dir,
+                    f"{os.path.splitext(fname)[0]}_mask.tif",
+                ),
+                filtered,
+                profile,
+                dtype="uint8",
+            )
+
+            previous_norm = current_norm
+
             print(f"Processed: {fname}")
+
         except Exception as e:
-            print(f"Error {fname}: {e}")
+
+           print(f"[ERROR] {fname}: {e}")
 
 if __name__ == "__main__":
-    # --- Configure Paths ---
+
+    # ======================================================
+    # Input / Output Directories
+    # ======================================================
+
     IN_DIR = "./data/raw_sar"
     NORM_DIR = "./data/normalized"
     OUT_DIR = "./results"
 
-    MY_THRESHOLDS = [((45, 75), (150, 255), (50, 255))]
-    MIN_PIXELS = 49 
-    process_time_series(IN_DIR, NORM_DIR, OUT_DIR, MY_THRESHOLDS, MIN_PIXELS)
+    # ======================================================
+    # Detection Parameters
+    # ======================================================
+
+    HSV_THRESHOLDS = {
+        "hue": (45, 75),
+        "saturation": (150, 255),
+        "value": (50, 255),
+    }
+
+    MIN_PIXELS = 40
+
+    # ======================================================
+    # Run RGB Avalanche Detection
+    # ======================================================
+
+    process_time_series(
+        IN_DIR,
+        NORM_DIR,
+        OUT_DIR,
+        HSV_THRESHOLDS,
+        MIN_PIXELS,
+    )
